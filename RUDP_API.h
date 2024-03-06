@@ -18,8 +18,8 @@
 #define FIN_FLAG 0x4
 #define SYN_ACK_FLAG 0x3
 #define FIN_ACK_FLAG 0x6
-#define BUFFER_SIZE 1024
-
+#define BUFFER_SIZE 16384
+//16384
 
 typedef struct _RUDP_PACKET {
     int length;
@@ -47,7 +47,7 @@ int rudp_connect(int sockfd, struct sockaddr_in *dest_addr, socklen_t addrlen);
 int rudp_accept(int sockfd, struct sockaddr_in *src_addr, socklen_t *addrlen);
 int rudp_dissconnect_client(int sockfd, struct sockaddr_in *dest_addr, socklen_t addrlen);
 int rudp_dissconect_server(int sockfd, struct sockaddr_in *src_addr, socklen_t addrlen);
-int rudp_recvfrom(int sock, struct sockaddr_in *src_addr, socklen_t *addrlen);
+int rudp_recvfrom(int sock,RUDP_PACKET* rudp_packet, struct sockaddr_in *src_addr, socklen_t *addrlen);
 int rudp_sendto(int sock, const void *data, size_t len, struct sockaddr_in *dest_addr, socklen_t addrlen);
 int rudp_socket(int server, int opt, struct sockaddr_in server_addr,int server_port, int MAX_CLIENTS);
 int rudp_close(int sock);

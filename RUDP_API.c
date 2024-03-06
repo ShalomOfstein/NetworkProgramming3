@@ -10,8 +10,9 @@
 #include "RUDP_API.h" // For the RUDP API functions
 
 #define INVALID_SOCKET -1
-#define BUFFER_SIZE 1024
-#define TIMEOUT_SECONDS 2
+#define TIMEOUT_SECONDS 0
+#define TIMEOUT_MICROSECONDS 100000
+#define NUM_RETRIES 3
 //**********************************************************************************************************
 //checksum function
 /*
@@ -87,10 +88,11 @@ int send_ack(int sockfd, struct sockaddr_in *src_addr, socklen_t addrlen, int se
 //**********************************************************************************************************
 
 // The function to set up a connection with the server
-int rudp_connect(int sockfd, struct sockaddr_in *dest_addr, socklen_t addrlen){
+int rudp_connect(int sockfd, struct sockaddr_in *dest_addr, socklen_t addrlen) {
 
     RUDP_PACKET syn_packet;
     RUDP_PACKET syn_ack_packet;
+    int retries = NUM_RETRIES;
 
 
     //make the syn packet
@@ -99,55 +101,58 @@ int rudp_connect(int sockfd, struct sockaddr_in *dest_addr, socklen_t addrlen){
     syn_packet.seq_num = 0; // only 1 packet so seq_num is 0
     syn_packet.flags = SYN_FLAG;
 
-
-    if(rudp_my_sendto(sockfd, &syn_packet, dest_addr, addrlen) < 0){
-        perror("sendto failed");
-        return -1;
-    }
-    printf("Sent SYN packet\n");
-    // TODO: set up a timeout
-
-    struct timeval timeout;
-    timeout.tv_sec = TIMEOUT_SECONDS;
-    timeout.tv_usec = 0;
-
-    // Set up the file descriptor set for select
-    fd_set read_fds;
-    FD_ZERO(&read_fds);
-    FD_SET(sockfd, &read_fds);
-
-    // Use select to wait for data on the socket or timeout
-    int ready = select(sockfd + 1, &read_fds, NULL, NULL, &timeout);
-
-    if (ready < 0) {
-        perror("select failed");
-        return -1;
-    } else if (ready == 0) {
-        // Timeout occurred
-        printf("Timeout occurred. Connection failed.\n");
-        return -1;
-    } else {
-        // Data is ready to read
-        if (rudp_my_recvfrom(sockfd, &syn_ack_packet, dest_addr, &addrlen) < 0) {
-            perror("recvfrom failed");
+    while (retries > 0) {
+        if (rudp_my_sendto(sockfd, &syn_packet, dest_addr, addrlen) < 0) {
+            perror("sendto failed");
             return -1;
         }
+        printf("Sent SYN packet\n");
 
-        printf("Received SYNACK packet\n");
+        struct timeval timeout;
+        timeout.tv_sec = TIMEOUT_SECONDS;
+        timeout.tv_usec = TIMEOUT_MICROSECONDS;
 
-        if (syn_ack_packet.flags == SYN_ACK_FLAG) {
-            // Make Ack packet
-            if (send_ack(sockfd, dest_addr, addrlen, 0) < 0) {
-                perror("sendto failed");
+        // Set up the file descriptor set for select
+        fd_set read_fds;
+        FD_ZERO(&read_fds);
+        FD_SET(sockfd, &read_fds);
+
+        // Use select to wait for data on the socket or timeout
+        int ready = select(sockfd + 1, &read_fds, NULL, NULL, &timeout);
+
+        if (ready < 0) {
+            perror("select failed");
+            return -1;
+        } else if (ready == 0) {
+            // Timeout occurred
+            printf("Timeout occurred. Connection failed.\n");
+            retries--;
+        } else {
+            // Data is ready to read
+            if (rudp_my_recvfrom(sockfd, &syn_ack_packet, dest_addr, &addrlen) < 0) {
+                perror("recvfrom failed");
                 return -1;
             }
-            printf("Sent ACK packet\n");
-            return 0;
-        } else {
-            printf("Invalid SYNACK packet\n");
-            return -1;
+
+            printf("Received SYNACK packet\n");
+
+            if (syn_ack_packet.flags == SYN_ACK_FLAG) {
+                // Make Ack packet
+                if (send_ack(sockfd, dest_addr, addrlen, 0) < 0) {
+                    perror("sendto failed");
+                    return -1;
+                }
+                printf("Sent ACK packet\n");
+                return 0;
+            } else {
+                printf("Invalid SYNACK packet\n");
+                return -1;
+            }
         }
     }
+    printf("Connection failed\n");
+    return -1;
+}
 
 //    if(rudp_my_recvfrom(sockfd, &syn_ack_packet, dest_addr, &addrlen) < 0){
 //        perror("recvfrom failed");
@@ -167,7 +172,7 @@ int rudp_connect(int sockfd, struct sockaddr_in *dest_addr, socklen_t addrlen){
 //        printf("Invalid SYNACK packet\n");
 //        return -1;
 //    }
-}
+
 
 // The function to accept a connection from a client
 int rudp_accept(int sockfd, struct sockaddr_in *src_addr, socklen_t *addrlen) {
@@ -226,11 +231,23 @@ int rudp_dissconnect_client(int sockfd, struct sockaddr_in *dest_addr, socklen_t
     fin_packet.seq_num = 0; // only 1 packet so seq_num is 0
     fin_packet.flags = FIN_FLAG;
 
+    // Set socket timeout for sending
+    struct timeval send_timeout;
+    send_timeout.tv_sec = TIMEOUT_SECONDS;
+    send_timeout.tv_usec = TIMEOUT_MICROSECONDS;
+    setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, &send_timeout, sizeof(send_timeout));
+
     if(rudp_my_sendto(sockfd, &fin_packet,dest_addr,addrlen) < 0){
         perror("sendto failed");
         return -1;
     }
     printf("Disconnecting from server, sending FIN packet\n");
+
+    // Reset socket timeout for receiving
+    struct timeval recv_timeout;
+    recv_timeout.tv_sec = TIMEOUT_SECONDS;
+    recv_timeout.tv_usec = TIMEOUT_MICROSECONDS;
+    setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &recv_timeout, sizeof(recv_timeout));
 
     if(rudp_my_recvfrom(sockfd, &fin_ack_packet,dest_addr, &addrlen) < 0){
         perror("recvfrom failed");
@@ -264,12 +281,24 @@ int rudp_dissconect_server(int sockfd, struct sockaddr_in *src_addr, socklen_t a
     fin_ack_packet.seq_num = 0; // only 1 packet so seq_num is 0
     fin_ack_packet.flags = FIN_ACK_FLAG;
 
+    // Set socket timeout for sending
+    struct timeval send_timeout;
+    send_timeout.tv_sec = TIMEOUT_SECONDS;
+    send_timeout.tv_usec = TIMEOUT_MICROSECONDS;
+    setsockopt(sockfd, SOL_SOCKET, SO_SNDTIMEO, &send_timeout, sizeof(send_timeout));
+
 
     if(rudp_my_sendto(sockfd, &fin_ack_packet, src_addr, addrlen) < 0){
         perror("FIN_ACK failed");
         return -1;
     }
     printf("Sent FINACK packet\n");
+
+    // Reset socket timeout for receiving
+    struct timeval recv_timeout;
+    recv_timeout.tv_sec = TIMEOUT_SECONDS;
+    recv_timeout.tv_usec = TIMEOUT_MICROSECONDS;
+    setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO, &recv_timeout, sizeof(recv_timeout));
 
 
     if(rudp_my_recvfrom(sockfd, &ack_packet, src_addr, &addrlen) < 0){
@@ -282,36 +311,38 @@ int rudp_dissconect_server(int sockfd, struct sockaddr_in *src_addr, socklen_t a
 
 //**********************************************************************************************************
 
-int rudp_recvfrom(int sock, struct sockaddr_in *src_addr, socklen_t *addrlen){
-    RUDP_PACKET rudp_packet;
-    int receive_bytes = rudp_my_recvfrom(sock, &rudp_packet, src_addr, addrlen);
+int rudp_recvfrom(int sock, RUDP_PACKET* rudp_packet ,struct sockaddr_in *src_addr, socklen_t *addrlen){
+
+    int receive_bytes = rudp_my_recvfrom(sock, rudp_packet, src_addr, addrlen);
     if(receive_bytes < 0){
         perror("recv failed");
         return -1;
     }
 
-    // regular send pack - always return an ACK paket
-    if(rudp_packet.flags == 0) {
-        int seq_num = rudp_packet.seq_num;
 
-        if (rudp_packet.data == NULL) {
+    // regular send pack - always return an ACK paket
+    if(rudp_packet->flags == 0) {
+        int seq_num = rudp_packet->seq_num;
+
+        if (rudp_packet->data == NULL) {
             fprintf(stderr, "Error: Received NULL data.\n");
             return -1;
         }
-        int checksum = calculate_checksum(rudp_packet.data, rudp_packet.length);
+        int checksum = calculate_checksum(rudp_packet->data, rudp_packet->length);
         char buffer[BUFFER_SIZE];
         memset(buffer, 0, BUFFER_SIZE);
-        if(checksum == rudp_packet.checksum){
+        if(checksum == rudp_packet->checksum){
             if(seq_num>=0){
 //                printf("Received packet number %d. Checksum = True. sending ACK for packet...\n", seq_num);
                 send_ack(sock, src_addr, *addrlen, seq_num);
-                memset(buffer, 0, rudp_packet.length);
+                memset(buffer, 0, rudp_packet->length);
 
             } else{
-                printf("Received last packet!\n");
+//                printf("Received last packet!\n");
+//                printf("last packet length: %d\n", rudp_packet->length);
                 send_ack(sock, src_addr, *addrlen, seq_num);
-                memset(buffer, 0, rudp_packet.length);
-                return rudp_packet.length;
+                memset(buffer, 0, rudp_packet->length);
+                return rudp_packet->length;
             }
         } else{
             printf("Checksum is incorrect\n");
@@ -319,7 +350,7 @@ int rudp_recvfrom(int sock, struct sockaddr_in *src_addr, socklen_t *addrlen){
         }
     }
     // if the packet is a FIN packet
-    else if(rudp_packet.flags==FIN_FLAG){
+    else if(rudp_packet->flags==FIN_FLAG){
         printf("FIN packet received. Disconnecting...\n");
         if(rudp_dissconect_server(sock, src_addr, *addrlen) < 0){
             perror("dissconect failed");
@@ -332,7 +363,7 @@ int rudp_recvfrom(int sock, struct sockaddr_in *src_addr, socklen_t *addrlen){
         printf("Invalid packet\n");
         return -1;
     }
-    return rudp_packet.length;
+    return rudp_packet->length;
 }
 
 
@@ -340,7 +371,8 @@ int rudp_sendto(int sock, const void *data, size_t len, struct sockaddr_in *dest
     RUDP_PACKET rudp_packet;
     size_t num_packets = (len + BUFFER_SIZE - 1) / BUFFER_SIZE;
     char* data_ptr = (char*)data;
-
+    int total_bytes_sent = 0;
+    printf("Sending the data in %zu packets\n", num_packets);
     for (size_t i = 0; i < num_packets; i++) {
         data_ptr = (char*)data + (i * BUFFER_SIZE);
         rudp_packet.seq_num = i;
@@ -350,19 +382,25 @@ int rudp_sendto(int sock, const void *data, size_t len, struct sockaddr_in *dest
         memcpy(rudp_packet.data, data_ptr, BUFFER_SIZE);
         rudp_packet.length = BUFFER_SIZE;
         if (i == num_packets - 1) {
+
             rudp_packet.seq_num = -1;
             rudp_packet.length = len - i * BUFFER_SIZE;
+            rudp_packet.checksum = calculate_checksum(data_ptr, rudp_packet.length);
         }
         if (rudp_my_sendto(sock, &rudp_packet, dest_addr, addrlen) < 0) {
             perror("sendto failed");
             return -1;
         }
-//        printf("Packet %zu out of %zu sent\n", i , num_packets-1);
+        if(i==(num_packets/2)){
+            printf("Sent half the packets\n");
+        }
+        total_bytes_sent= total_bytes_sent+ rudp_packet.length;
+//        printf("Packet %zu out of %zu sent (%d total bytes)\n", i , num_packets-1, total_bytes_sent);
 
         // Set up a timeout
         struct timeval timeout;
         timeout.tv_sec = TIMEOUT_SECONDS;
-        timeout.tv_usec = 0;
+        timeout.tv_usec = TIMEOUT_MICROSECONDS;
 
         while (1) {
             // Set up the file descriptor set for select
@@ -378,14 +416,14 @@ int rudp_sendto(int sock, const void *data, size_t len, struct sockaddr_in *dest
                 return -1;
             } else if (ready == 0) {
                 // Timeout occurred, resend the packet
-                printf("Timeout occurred, resending packet\n");
+//                printf("Timeout occurred, resending packet\n");
                 if (rudp_my_sendto(sock, &rudp_packet, dest_addr, addrlen) < 0) {
                     perror("sendto failed");
                     return -1;
                 }
-                printf("Resent packet, waiting for ACK\n");
+//                printf("Resent packet, waiting for ACK\n");
                 timeout.tv_sec = TIMEOUT_SECONDS;
-                timeout.tv_usec = 0;
+                timeout.tv_usec = TIMEOUT_MICROSECONDS;
                 continue;
             } else {
                 // Data is ready to read, check if it's an ACK packet

@@ -13,7 +13,6 @@
 #define SERVER_IP "127.0.0.1"
 #define SERVER_PORT 5060
 #define MAX_CLIENTS 1
-#define BUFFER_SIZE 1024
 #define MAX_RUNS 50
 #define FILE_LENGTH 2500000
 #define FILENAME "stats.txt"
@@ -54,7 +53,7 @@ int main(int args, char** argv){
         close(sock);
         return 1;
     }
-    fprintf(stdout, "Accepted connection from %s:%d\n", inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
+    printf("Accepted connection from %s:%d\n", inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
 
 //    socklen_t len = sizeof(CC_algo);
 //    // Try to change the Congestion Control algorithm
@@ -77,34 +76,47 @@ int main(int args, char** argv){
         perror("fopen");
         return 1;
     }
-
+    RUDP_PACKET *packet = (RUDP_PACKET *) malloc(sizeof(RUDP_PACKET));// is this the right way to do it?
     while(1){
+
         bytes_received=0;
         counter = 0;
         total_bytes_received = 0;
         memset(buffer, 0, BUFFER_SIZE);
+        int sequence =-1;
 
 
         while(total_bytes_received<FILE_LENGTH){
             bytes_received=0;
-            bytes_received = rudp_recvfrom(sock,(struct sockaddr_in *)&client_addr, &client_len);
-            if (bytes_received ==- 1) {
-                perror("rudp_recvfrom(2)");
-                close(sock);
-                return 1;
+            bytes_received = rudp_recvfrom(sock,packet,(struct sockaddr_in *)&client_addr, &client_len);
+            if(packet->seq_num > sequence||packet->seq_num ==-1) {
+                if (bytes_received == -1) {
+                    perror("rudp_recvfrom(2)");
+                    close(sock);
+                    free(packet);
+                    return -1;
+                }
+                if (counter == 0) {
+                    gettimeofday(&start, NULL);
+                    printf("Started receiving file...\n");
+                }
+                if (bytes_received == -2) {
+                    close(sock);
+                    break;
+                }
+                sequence ++;
+                total_bytes_received = total_bytes_received + bytes_received;
+                counter++;
+//                printf("including packet %d, Received total of %d bytes from the client\n", packet->seq_num,total_bytes_received);
             }
-            if(counter == 0){
-                gettimeofday(&start, NULL);
+            else{
+//                printf("Received a duplicate packet, ignoring it\n");
             }
-            if (bytes_received == -2) {
-                close(sock);
-                break;
+            if((counter%50==0)&&(counter!=0)){
+                printf(" -> Received %d packets from the sender\n",counter);
             }
-            total_bytes_received += bytes_received;
-            counter++;
             memset(buffer, 0, sizeof(buffer));
-//            printf("Received total of %d bytes from the client\n", total_bytes_received);
-
+            memset(packet, 0, sizeof(RUDP_PACKET));
         }
 
         gettimeofday(&end, NULL);
@@ -113,7 +125,7 @@ int main(int args, char** argv){
         }
 
 
-        fprintf(stdout, "File transfer complete\n");
+        printf("File transfer complete. Received a total of %d bytes\n",total_bytes_received);
         double this_elapsed_time = ((end.tv_sec - start.tv_sec) * 1000.0) + ((end.tv_usec - start.tv_usec) / 1000.0);
         double this_speed = (total_bytes_received / 1024.0 / 1024.0) / (this_elapsed_time / 1000.0);
         speed_sum = speed_sum + this_speed;
@@ -125,9 +137,10 @@ int main(int args, char** argv){
 
         // Print the sent message.
         printf( "waiting for the Senders response...\n");
-    }
-    fclose(stats_file);
 
+    }
+    free(packet);
+    fclose(stats_file);
     close(sock);
     printf("closed the client socket\n");
     // ... (Print statistics and times)

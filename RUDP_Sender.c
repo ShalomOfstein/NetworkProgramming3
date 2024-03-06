@@ -9,7 +9,6 @@
 #include <netinet/tcp.h> // For the TCP_CONGESTION option
 #include "RUDP_API.h" // For the RUDP API functions
 #define INVALID_SOCKET -1
-#define BUFFER_SIZE 1024
 #define TIMEOUT_SECONDS 2
 #define SERVER_IP "127.0.0.1"
 #define SERVER_PORT 5060
