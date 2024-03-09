@@ -98,7 +98,7 @@ int main(int args, char** argv){
                 }
                 if (counter == 0) {
                     gettimeofday(&start, NULL);
-                    printf("Started receiving file...\n");
+//                    printf("Started receiving file...\n");
                 }
                 if (bytes_received == -2) {
                     close(sock);
